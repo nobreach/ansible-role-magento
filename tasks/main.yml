@@ -1,0 +1,104 @@
+---
+# tasks file for magento
+
+# - debug: var=ansible_python
+
+- name: get Magento
+  # get_url:
+  #   url: https://github.com/magento/magento2/archive/2.1.7.tar.gz
+  #   dest: /tmp/magento2-2.1.7.tar.gz
+  command: wget -O /tmp/magento2-2.1.7.tar.gz https://github.com/magento/magento2/archive/2.1.7.tar.gz
+
+- file:
+    path: /var/www/magento2
+    state: directory
+    owner: www-data
+    recurse: yes
+
+- name: unpack Magento
+  unarchive:
+    src: /tmp/magento2-2.1.7.tar.gz
+    dest: /var/www/magento2
+    extra_opts: "--strip-components=1"
+    remote_src: yes
+
+- name: composer install
+  command: composer install
+  args:
+    chdir: /var/www/magento2
+
+- command: >
+    mysql -uroot --execute="UPDATE user SET plugin='mysql_native_password' WHERE User='root'; FLUSH PRIVILEGES;" mysql
+
+- name: create magento database
+  mysql_db:
+    name: magento2
+    state: present
+
+- replace:
+    path: /var/www/magento2/composer.json
+    regexp: '"prefer-stable": true\n}'
+    replace: '"prefer-stable": true,\n    "repositories": [\n        {\n            "type": "composer",\n            "url": "https://repo.magento.com/"\n        }\n    ]\n}\n'
+
+- include_vars: secrets.yml
+
+# - name: install sample data using Composer
+#   expect:
+#     command: php /var/www/magento2/bin/magento sampledata:deploy
+#     responses:
+#       'Username: ': "{{MAGENTO_PUBLIC_KEY}}\r"
+#       'Password: ': "{{MAGENTO_PRIVATE_KEY}}\r"
+#       'Do you want to store credentials for repo.magento.com in /var/www/magento2/var/composer_home/auth.json \? \[Yn\]': 'Y\r'
+#     timeout: 3000
+#   register: out
+
+- name: here
+  template:
+    src: ./install-sample-data-using-composer.exp.j2
+    dest: /tmp/install-sample-data-using-composer.exp
+
+- apt:
+    name: expect
+    state: latest
+    update_cache: yes
+
+- name: install sample data using Composer
+  command: expect -f /tmp/install-sample-data-using-composer.exp
+  args:
+    chdir: /var/www/magento2/bin
+  register: out
+
+- debug: var=out.stdout_lines
+
+- name: install the Magento software using the command line
+  shell: |
+    ./magento setup:install --admin-firstname={{ admin_firstname }} \
+                            --admin-lastname={{ admin_lastname }} \
+                            --admin-email={{ admin_email }} \
+                            --admin-user={{ admin_user }} \
+                            --admin-password={{ admin_password }} \
+                            --db-host=127.0.0.1
+  args:
+    chdir: /var/www/magento2/bin
+  register: out
+  notify:
+  - start php-fpm
+
+- debug: var=out.stdout_lines
+
+- command: php bin/magento setup:static-content:deploy
+  args:
+    chdir: /var/www/magento2
+
+- command: >
+    mysql -uroot --execute="INSERT INTO `core_config_data` (`scope`, `scope_id`, `path`, `value`) VALUES ('default', 0, 'dev/static/sign', '0');" magento2
+
+- command: php /var/www/magento2/bin/magento cache:clean config
+
+- name: set ownership and permissions for (Magento)
+  file:
+    path: /var/www/magento2
+    state: directory
+    owner: www-data
+    recurse: yes
+
